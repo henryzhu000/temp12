@@ -1,0 +1,38 @@
+Create a custom truststore instead of editing the global one:
+
+keytool -importcert -alias digicert \
+    -file DigiCertGlobalRootG2.crt \
+    -keystore ./truststore.jks
+
+
+Then in your Java app:
+
+-Djavax.net.ssl.trustStore=truststore.jks
+-Djavax.net.ssl.trustStorePassword=changeit
+
+
+That way, it only affects your dev app, not the whole syste
+
+--------------
+
+Download the root certificate (you only need the top-level root, not the leaf):
+
+DigiCert Global Root G2
+
+Save it as DigiCertGlobalRootG2.crt
+
+Import into Java’s truststore:
+
+keytool -importcert -trustcacerts \
+    -alias digicertrootg2 \
+    -file DigiCertGlobalRootG2.crt \
+    -keystore "%JAVA_HOME%/lib/security/cacerts"
+
+
+Default password is changeit.
+
+Restart your app and test again.
+
+------------
+
+https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem
