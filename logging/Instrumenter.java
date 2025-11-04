@@ -26,18 +26,39 @@ public class Instrumenter {
     }
 
     private static boolean isAllowedType(Path path) {
-        String name = path.getFileName().toString().toLowerCase();
-        for (String ext : ALLOWED_TYPES) if (name.endsWith(ext)) return true;
+        String n = path.getFileName().toString().toLowerCase();
+        for (String ext : ALLOWED_TYPES) if (n.endsWith(ext)) return true;
         return false;
     }
 
-    /** Prescan for lines that should never be touched (log/throws) */
+    /** Prescan for lines that should never be instrumented */
     private static Set<Integer> prescanSkipLines(String src) {
         Set<Integer> skip = new HashSet<>();
         String[] lines = src.split("\n", -1);
+
         for (int i = 0; i < lines.length; i++) {
-            String l = lines[i];
-            if (l.contains("log") || l.contains("throws")) skip.add(i);
+            String l = lines[i].trim();
+
+            // existing skip rules
+            if (l.contains("log") || l.contains("throws")) {
+                skip.add(i);
+                continue;
+            }
+
+            // skip control loops
+            if (l.contains("for(") || l.contains("while(")) {
+                skip.add(i);
+                continue;
+            }
+
+            // skip variable declarations
+            // heuristic: contains '=', not comparison, not 'return', not '=='
+            if (l.contains("=") && 
+                !l.contains("==") && !l.contains(">=") && !l.contains("<=") &&
+                !l.startsWith("return") && !l.startsWith("if") && !l.startsWith("while") &&
+                !l.startsWith("for") && !l.startsWith("@") && !l.contains("->")) {
+                skip.add(i);
+            }
         }
         return skip;
     }
@@ -58,7 +79,7 @@ public class Instrumenter {
             boolean afterThrow = false;
             boolean inMethod = false;
             boolean inString = false;
-            boolean insideClass = false;   // 🔹 NEW: don’t inject until inside a class
+            boolean insideClass = false;
 
             int braceDepth = 0;
             int printCounter = 0;
@@ -71,7 +92,7 @@ public class Instrumenter {
                 out.append(c);
                 if (c == '\n') currentLine++;
 
-                // skip prescanned lines
+                // skip prescanned lines entirely
                 if (skipLines.contains(currentLine)) continue;
 
                 // handle string literals
@@ -104,11 +125,9 @@ public class Instrumenter {
                     if (skipNextBrace) {
                         skipNextBrace = false;
                         braceDepth++;
-
-                        // only count first class-level brace as entering class
                         if (!insideClass) {
                             insideClass = true;
-                            continue; // don’t inject for class { itself
+                            continue; // skip injection for class brace
                         }
                         inMethod = false;
                     } else if (insideClass) {
