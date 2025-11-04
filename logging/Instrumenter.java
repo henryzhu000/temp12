@@ -31,32 +31,17 @@ public class Instrumenter {
         return false;
     }
 
-    /** Prescan for lines that should never be instrumented */
-    private static Set<Integer> prescanSkipLines(String src) {
+    /** Detects lines that must never be instrumented */
+    private static Set<Integer> prescanSkipLines(List<String> lines) {
         Set<Integer> skip = new HashSet<>();
-        String[] lines = src.split("\n", -1);
+        for (int i = 0; i < lines.size(); i++) {
+            String l = lines.get(i).trim();
 
-        for (int i = 0; i < lines.length; i++) {
-            String l = lines[i].trim();
-
-            // existing skip rules
-            if (l.contains("log") || l.contains("throws")) {
-                skip.add(i);
-                continue;
-            }
-
-            // skip control loops
-            if (l.contains("for(") || l.contains("while(")) {
-                skip.add(i);
-                continue;
-            }
-
-            // skip variable declarations
-            // heuristic: contains '=', not comparison, not 'return', not '=='
-            if (l.contains("=") && 
-                !l.contains("==") && !l.contains(">=") && !l.contains("<=") &&
-                !l.startsWith("return") && !l.startsWith("if") && !l.startsWith("while") &&
-                !l.startsWith("for") && !l.startsWith("@") && !l.contains("->")) {
+            // always skip obvious structures or decls
+            if (l.contains("log") || l.contains("throws") || l.contains("throw") ||
+                l.contains("for(") || l.contains("while(") ||
+                l.matches(".*\\b(if|else if)\\s*\\(.*\\).*") ||
+                l.matches(".*\\b[a-zA-Z_][a-zA-Z0-9_<>\\[\\]]*\\s+[a-zA-Z_][a-zA-Z0-9_]*\\s*=.*;.*")) {
                 skip.add(i);
             }
         }
@@ -65,11 +50,12 @@ public class Instrumenter {
 
     private static void processFile(Path file, Path root) {
         try {
-            String src = Files.readString(file);
-            Set<Integer> skipLines = prescanSkipLines(src);
+            List<String> lines = Files.readAllLines(file);
+            Set<Integer> skipLines = prescanSkipLines(lines);
+            String src = String.join("\n", lines);
 
-            String relPath = root.relativize(file).toString();
-            String className = relPath.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
+            String rel = root.relativize(file).toString();
+            String className = rel.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
 
             StringBuilder out = new StringBuilder();
 
@@ -89,11 +75,16 @@ public class Instrumenter {
 
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
-                out.append(c);
-                if (c == '\n') currentLine++;
 
-                // skip prescanned lines entirely
-                if (skipLines.contains(currentLine)) continue;
+                // when newline reached, increment line counter AFTER writing the char
+                if (c == '\n') currentLine++;
+                // if the entire line is to be skipped, just copy and continue
+                if (skipLines.contains(currentLine)) {
+                    out.append(c);
+                    continue;
+                }
+
+                out.append(c);
 
                 // handle string literals
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
@@ -101,7 +92,7 @@ public class Instrumenter {
                 }
                 if (inString) continue;
 
-                // collect words
+                // collect identifiers
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
@@ -121,16 +112,22 @@ public class Instrumenter {
                     }
                 }
 
+                // inside-class instrumentation only
+                if (!insideClass) {
+                    if (c == '{' && skipNextBrace) {
+                        skipNextBrace = false;
+                        insideClass = true;
+                        braceDepth++;
+                    }
+                    continue;
+                }
+
                 if (c == '{') {
                     if (skipNextBrace) {
                         skipNextBrace = false;
                         braceDepth++;
-                        if (!insideClass) {
-                            insideClass = true;
-                            continue; // skip injection for class brace
-                        }
                         inMethod = false;
-                    } else if (insideClass) {
+                    } else {
                         String detected = detectMethodName(src, i);
                         if (detected != null && !NON_METHOD_BLOCKS.contains(detected)) {
                             currentMethod = detected;
