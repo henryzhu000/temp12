@@ -13,7 +13,6 @@ public class Instrumenter {
 
     public static void main(String[] args) throws IOException {
         Path root = Path.of("D:\\eclipseWorkSpace\\test\\5\\greenMailEmailMock\\greenMail\\greenMail - Copy\\src\\main\\java");
-
         if (!Files.exists(root)) {
             System.err.println("Path not found: " + root);
             return;
@@ -56,34 +55,39 @@ public class Instrumenter {
 
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
-                out.append(c);
 
-                // reset skip when newline reached
+                // Detect newline BEFORE appending, so skip resets *before* next line
                 if (c == '\n') {
                     skipUntilNewline = false;
                 }
 
-                // handle string literals
+                out.append(c);
+
+                // If we’re skipping this line, ignore everything else
+                if (skipUntilNewline) continue;
+
+                // Detect entering/exiting a string literal
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
-                if (inString || skipUntilNewline) continue;
+                if (inString) continue;
 
-                // track identifiers
+                // Gather identifier
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
                     String token = word.toString();
-                    // mark "class" to skip its brace
+                    word.setLength(0);
+
                     if (token.equals("class") || token.equals("interface") || token.equals("enum") || token.equals("record")) {
                         skipNextBrace = true;
                     } else if (token.equals("return")) {
                         afterReturn = true;
                     } else if (token.equals("throws") || token.equals("log")) {
-                        // 👇 hard skip zone until newline
+                        // Immediately trigger skip-until-newline
                         skipUntilNewline = true;
+                        continue;
                     }
-                    word.setLength(0);
                 }
 
                 if (c == '{') {
@@ -132,7 +136,6 @@ public class Instrumenter {
         }
     }
 
-    // --- helper ---
     private static String detectMethodName(String src, int openIdx) {
         int i = openIdx - 1;
         while (i >= 0 && Character.isWhitespace(src.charAt(i))) i--;
