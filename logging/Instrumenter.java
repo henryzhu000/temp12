@@ -5,8 +5,9 @@ import java.util.*;
 public class Instrumenter {
 
     private static final Set<String> ALLOWED_TYPES = Set.of(".java");
+
     private static final Set<String> NON_METHOD_BLOCKS = Set.of(
-            "if","for","while","switch","try","catch","finally",
+            "if","for","while","try","catch","finally",
             "do","else","synchronized","static","instanceof","new"
     );
 
@@ -31,12 +32,12 @@ public class Instrumenter {
         return false;
     }
 
-    /** quick prescan: returns a set of line numbers that contain "log" or "throws" */
     private static Set<Integer> prescanSkipLines(String src) {
         Set<Integer> skip = new HashSet<>();
         String[] lines = src.split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
             String l = lines[i];
+            // If a line has "log" or "throws", skip the entire line
             if (l.contains("log") || l.contains("throws")) {
                 skip.add(i);
             }
@@ -56,6 +57,8 @@ public class Instrumenter {
 
             boolean skipNextBrace = false;
             boolean afterReturn = false;
+            boolean afterBreak = false;
+            boolean afterThrow = false;
             boolean inMethod = false;
             boolean inString = false;
 
@@ -65,37 +68,45 @@ public class Instrumenter {
             StringBuilder word = new StringBuilder();
 
             int currentLine = 0;
+
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
                 out.append(c);
 
+                // track line
                 if (c == '\n') currentLine++;
 
-                // --- skip entire line if prescan says so ---
+                // skip any prescanned lines containing log or throws
                 if (skipLines.contains(currentLine)) continue;
 
-                // --- handle string literals ---
+                // toggle string literal state
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
                 if (inString) continue;
 
-                // --- collect identifiers ---
+                // collect identifier
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
                     String token = word.toString();
                     word.setLength(0);
 
-                    if (token.equals("class") || token.equals("interface")
-                            || token.equals("enum") || token.equals("record")) {
-                        skipNextBrace = true;
+                    // mark type or control tokens
+                    if (token.equals("class") || token.equals("interface") ||
+                        token.equals("enum") || token.equals("record") ||
+                        token.equals("switch")) {
+                        skipNextBrace = true; // don't inject after this brace
                     } else if (token.equals("return")) {
                         afterReturn = true;
+                    } else if (token.equals("break")) {
+                        afterBreak = true;
+                    } else if (token.equals("throw")) {
+                        afterThrow = true;
                     }
                 }
 
-                // --- injections ---
+                // handle braces and semicolons
                 if (c == '{') {
                     if (skipNextBrace) {
                         skipNextBrace = false;
@@ -121,19 +132,24 @@ public class Instrumenter {
                         currentMethod = "block";
                     }
                 } else if (c == ';') {
-                    if (!afterReturn && inMethod) {
+                    // skip after return, break, or throw
+                    if (!afterReturn && !afterBreak && !afterThrow && inMethod) {
                         printCounter++;
                         out.append(" henry.tool.print(\"")
                            .append(className).append(" ")
                            .append(className).append("_").append(currentMethod)
                            .append(" ; trace #").append(printCounter).append("\");");
                     }
+                    // reset control-flow flags
                     afterReturn = false;
+                    afterBreak = false;
+                    afterThrow = false;
                 }
             }
 
             Files.writeString(file, out.toString());
             System.out.println("Instrumented: " + className + " (" + printCounter + " inserts)");
+
         } catch (Exception e) {
             System.err.println("Error processing " + file + ": " + e.getMessage());
         }
