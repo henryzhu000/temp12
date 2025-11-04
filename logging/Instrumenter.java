@@ -5,10 +5,9 @@ import java.util.*;
 public class Instrumenter {
 
     private static final Set<String> ALLOWED_TYPES = Set.of(".java");
-
     private static final Set<String> NON_METHOD_BLOCKS = Set.of(
-            "if", "for", "while", "switch", "try", "catch", "finally",
-            "do", "else", "synchronized", "static", "instanceof", "new"
+            "if","for","while","switch","try","catch","finally",
+            "do","else","synchronized","static","instanceof","new"
     );
 
     public static void main(String[] args) throws IOException {
@@ -27,10 +26,8 @@ public class Instrumenter {
     }
 
     private static boolean isAllowedType(Path path) {
-        String name = path.getFileName().toString().toLowerCase();
-        for (String ext : ALLOWED_TYPES) {
-            if (name.endsWith(ext)) return true;
-        }
+        String n = path.getFileName().toString().toLowerCase();
+        for (String ext : ALLOWED_TYPES) if (n.endsWith(ext)) return true;
         return false;
     }
 
@@ -39,8 +36,8 @@ public class Instrumenter {
             String src = Files.readString(file);
             StringBuilder out = new StringBuilder();
 
-            String relPath = root.relativize(file).toString();
-            String className = relPath.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
+            String rel = root.relativize(file).toString();
+            String className = rel.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
 
             boolean skipNextBrace = false;
             boolean afterReturn = false;
@@ -55,41 +52,40 @@ public class Instrumenter {
 
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
+                out.append(c);
 
-                // Detect newline BEFORE appending, so skip resets *before* next line
+                // --- newline resets skip flag ---
                 if (c == '\n') {
                     skipUntilNewline = false;
                 }
 
-                out.append(c);
-
-                // If we’re skipping this line, ignore everything else
-                if (skipUntilNewline) continue;
-
-                // Detect entering/exiting a string literal
+                // --- toggle string literal ---
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
-                if (inString) continue;
+                if (inString) continue;        // ignore everything inside strings
+                if (skipUntilNewline) continue; // ignore until newline if skip active
 
-                // Gather identifier
+                // --- collect identifier characters ---
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
                     String token = word.toString();
                     word.setLength(0);
 
-                    if (token.equals("class") || token.equals("interface") || token.equals("enum") || token.equals("record")) {
+                    if (token.equals("class") || token.equals("interface")
+                            || token.equals("enum") || token.equals("record")) {
                         skipNextBrace = true;
                     } else if (token.equals("return")) {
                         afterReturn = true;
                     } else if (token.equals("throws") || token.equals("log")) {
-                        // Immediately trigger skip-until-newline
+                        // 🚫 activate hard skip until newline
                         skipUntilNewline = true;
                         continue;
                     }
                 }
 
+                // --- injection points ---
                 if (c == '{') {
                     if (skipNextBrace) {
                         skipNextBrace = false;
@@ -104,8 +100,7 @@ public class Instrumenter {
                         braceDepth++;
                         printCounter++;
                         out.append(" henry.tool.print(\"")
-                           .append(className)
-                           .append(" ")
+                           .append(className).append(" ")
                            .append(className).append("_").append(currentMethod)
                            .append(" { trace #").append(printCounter).append("\");");
                     }
@@ -119,8 +114,7 @@ public class Instrumenter {
                     if (!afterReturn && inMethod && !skipUntilNewline) {
                         printCounter++;
                         out.append(" henry.tool.print(\"")
-                           .append(className)
-                           .append(" ")
+                           .append(className).append(" ")
                            .append(className).append("_").append(currentMethod)
                            .append(" ; trace #").append(printCounter).append("\");");
                     }
@@ -136,6 +130,7 @@ public class Instrumenter {
         }
     }
 
+    // --- helper to guess method name ---
     private static String detectMethodName(String src, int openIdx) {
         int i = openIdx - 1;
         while (i >= 0 && Character.isWhitespace(src.charAt(i))) i--;
