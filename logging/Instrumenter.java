@@ -5,10 +5,6 @@ import java.util.*;
 public class Instrumenter {
 
     private static final Set<String> ALLOWED_TYPES = Set.of(".java");
-    private static final Set<String> NON_METHOD_BLOCKS = Set.of(
-            "if","for","while","try","catch","finally",
-            "do","else","synchronized","static","instanceof","new"
-    );
 
     public static void main(String[] args) throws IOException {
         Path root = Path.of("D:\\eclipseWorkSpace\\test\\5\\greenMailEmailMock\\greenMail\\greenMail - Copy\\src\\main\\java");
@@ -26,20 +22,21 @@ public class Instrumenter {
     }
 
     private static boolean isAllowedType(Path path) {
-        String n = path.getFileName().toString().toLowerCase();
-        for (String ext : ALLOWED_TYPES) if (n.endsWith(ext)) return true;
+        String name = path.getFileName().toString().toLowerCase();
+        for (String ext : ALLOWED_TYPES) if (name.endsWith(ext)) return true;
         return false;
     }
 
-    /** Detects lines that must never be instrumented */
+    /** Prescan for lines that should be skipped entirely */
     private static Set<Integer> prescanSkipLines(List<String> lines) {
         Set<Integer> skip = new HashSet<>();
         for (int i = 0; i < lines.size(); i++) {
             String l = lines.get(i).trim();
 
-            // always skip obvious structures or decls
+            // universal line skips
             if (l.contains("log") || l.contains("throws") || l.contains("throw") ||
                 l.contains("for(") || l.contains("while(") ||
+                l.contains("[") || l.contains("]") ||
                 l.matches(".*\\b(if|else if)\\s*\\(.*\\).*") ||
                 l.matches(".*\\b[a-zA-Z_][a-zA-Z0-9_<>\\[\\]]*\\s+[a-zA-Z_][a-zA-Z0-9_]*\\s*=.*;.*")) {
                 skip.add(i);
@@ -76,9 +73,10 @@ public class Instrumenter {
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
 
-                // when newline reached, increment line counter AFTER writing the char
+                // count line before doing anything
                 if (c == '\n') currentLine++;
-                // if the entire line is to be skipped, just copy and continue
+
+                // completely skip forbidden lines
                 if (skipLines.contains(currentLine)) {
                     out.append(c);
                     continue;
@@ -86,13 +84,13 @@ public class Instrumenter {
 
                 out.append(c);
 
-                // handle string literals
+                // string literal toggle
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
                 if (inString) continue;
 
-                // collect identifiers
+                // collect tokens
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
@@ -112,7 +110,7 @@ public class Instrumenter {
                     }
                 }
 
-                // inside-class instrumentation only
+                // don't instrument before first class
                 if (!insideClass) {
                     if (c == '{' && skipNextBrace) {
                         skipNextBrace = false;
@@ -122,31 +120,20 @@ public class Instrumenter {
                     continue;
                 }
 
+                // removed all '{ trace' injections per request
                 if (c == '{') {
-                    if (skipNextBrace) {
-                        skipNextBrace = false;
-                        braceDepth++;
-                        inMethod = false;
-                    } else {
-                        String detected = detectMethodName(src, i);
-                        if (detected != null && !NON_METHOD_BLOCKS.contains(detected)) {
-                            currentMethod = detected;
-                            inMethod = true;
-                        }
-                        braceDepth++;
-                        printCounter++;
-                        out.append(" henry.tool.print(\"")
-                           .append(className).append(" ")
-                           .append(className).append("_").append(currentMethod)
-                           .append(" { trace #").append(printCounter).append("\");");
-                    }
-                } else if (c == '}') {
+                    braceDepth++;
+                    continue;
+                }
+
+                if (c == '}') {
                     if (braceDepth > 0) braceDepth--;
                     if (braceDepth <= 1) {
                         inMethod = false;
                         currentMethod = "block";
                     }
                 } else if (c == ';') {
+                    // only trace semicolons (no return/break/throw)
                     if (insideClass && inMethod &&
                         !afterReturn && !afterBreak && !afterThrow) {
                         printCounter++;
@@ -163,7 +150,6 @@ public class Instrumenter {
 
             Files.writeString(file, out.toString());
             System.out.println("Instrumented: " + className + " (" + printCounter + " inserts)");
-
         } catch (Exception e) {
             System.err.println("Error processing " + file + ": " + e.getMessage());
         }
