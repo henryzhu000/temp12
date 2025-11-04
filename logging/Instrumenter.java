@@ -31,42 +31,56 @@ public class Instrumenter {
         return false;
     }
 
+    /** quick prescan: returns a set of line numbers that contain "log" or "throws" */
+    private static Set<Integer> prescanSkipLines(String src) {
+        Set<Integer> skip = new HashSet<>();
+        String[] lines = src.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String l = lines[i];
+            if (l.contains("log") || l.contains("throws")) {
+                skip.add(i);
+            }
+        }
+        return skip;
+    }
+
     private static void processFile(Path file, Path root) {
         try {
             String src = Files.readString(file);
-            StringBuilder out = new StringBuilder();
+            Set<Integer> skipLines = prescanSkipLines(src);
 
             String rel = root.relativize(file).toString();
             String className = rel.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
+
+            StringBuilder out = new StringBuilder();
 
             boolean skipNextBrace = false;
             boolean afterReturn = false;
             boolean inMethod = false;
             boolean inString = false;
-            boolean skipUntilNewline = false;
 
             int braceDepth = 0;
             int printCounter = 0;
             String currentMethod = "block";
             StringBuilder word = new StringBuilder();
 
+            int currentLine = 0;
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
                 out.append(c);
 
-                // --- newline resets skip flag ---
-                if (c == '\n') {
-                    skipUntilNewline = false;
-                }
+                if (c == '\n') currentLine++;
 
-                // --- toggle string literal ---
+                // --- skip entire line if prescan says so ---
+                if (skipLines.contains(currentLine)) continue;
+
+                // --- handle string literals ---
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
-                if (inString) continue;        // ignore everything inside strings
-                if (skipUntilNewline) continue; // ignore until newline if skip active
+                if (inString) continue;
 
-                // --- collect identifier characters ---
+                // --- collect identifiers ---
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
@@ -78,14 +92,10 @@ public class Instrumenter {
                         skipNextBrace = true;
                     } else if (token.equals("return")) {
                         afterReturn = true;
-                    } else if (token.equals("throws") || token.equals("log")) {
-                        // 🚫 activate hard skip until newline
-                        skipUntilNewline = true;
-                        continue;
                     }
                 }
 
-                // --- injection points ---
+                // --- injections ---
                 if (c == '{') {
                     if (skipNextBrace) {
                         skipNextBrace = false;
@@ -111,7 +121,7 @@ public class Instrumenter {
                         currentMethod = "block";
                     }
                 } else if (c == ';') {
-                    if (!afterReturn && inMethod && !skipUntilNewline) {
+                    if (!afterReturn && inMethod) {
                         printCounter++;
                         out.append(" henry.tool.print(\"")
                            .append(className).append(" ")
@@ -124,13 +134,11 @@ public class Instrumenter {
 
             Files.writeString(file, out.toString());
             System.out.println("Instrumented: " + className + " (" + printCounter + " inserts)");
-
         } catch (Exception e) {
             System.err.println("Error processing " + file + ": " + e.getMessage());
         }
     }
 
-    // --- helper to guess method name ---
     private static String detectMethodName(String src, int openIdx) {
         int i = openIdx - 1;
         while (i >= 0 && Character.isWhitespace(src.charAt(i))) i--;
