@@ -5,7 +5,6 @@ import java.util.*;
 public class Instrumenter {
 
     private static final Set<String> ALLOWED_TYPES = Set.of(".java");
-
     private static final Set<String> NON_METHOD_BLOCKS = Set.of(
             "if","for","while","try","catch","finally",
             "do","else","synchronized","static","instanceof","new"
@@ -27,20 +26,18 @@ public class Instrumenter {
     }
 
     private static boolean isAllowedType(Path path) {
-        String n = path.getFileName().toString().toLowerCase();
-        for (String ext : ALLOWED_TYPES) if (n.endsWith(ext)) return true;
+        String name = path.getFileName().toString().toLowerCase();
+        for (String ext : ALLOWED_TYPES) if (name.endsWith(ext)) return true;
         return false;
     }
 
+    /** Prescan for lines that should never be touched (log/throws) */
     private static Set<Integer> prescanSkipLines(String src) {
         Set<Integer> skip = new HashSet<>();
         String[] lines = src.split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
             String l = lines[i];
-            // If a line has "log" or "throws", skip the entire line
-            if (l.contains("log") || l.contains("throws")) {
-                skip.add(i);
-            }
+            if (l.contains("log") || l.contains("throws")) skip.add(i);
         }
         return skip;
     }
@@ -50,8 +47,8 @@ public class Instrumenter {
             String src = Files.readString(file);
             Set<Integer> skipLines = prescanSkipLines(src);
 
-            String rel = root.relativize(file).toString();
-            String className = rel.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
+            String relPath = root.relativize(file).toString();
+            String className = relPath.replace(FileSystems.getDefault().getSeparator(), ".").replaceAll("\\.java$", "");
 
             StringBuilder out = new StringBuilder();
 
@@ -61,42 +58,39 @@ public class Instrumenter {
             boolean afterThrow = false;
             boolean inMethod = false;
             boolean inString = false;
+            boolean insideClass = false;   // 🔹 NEW: don’t inject until inside a class
 
             int braceDepth = 0;
             int printCounter = 0;
             String currentMethod = "block";
             StringBuilder word = new StringBuilder();
-
             int currentLine = 0;
 
             for (int i = 0; i < src.length(); i++) {
                 char c = src.charAt(i);
                 out.append(c);
-
-                // track line
                 if (c == '\n') currentLine++;
 
-                // skip any prescanned lines containing log or throws
+                // skip prescanned lines
                 if (skipLines.contains(currentLine)) continue;
 
-                // toggle string literal state
+                // handle string literals
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
                 if (inString) continue;
 
-                // collect identifier
+                // collect words
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
                     String token = word.toString();
                     word.setLength(0);
 
-                    // mark type or control tokens
                     if (token.equals("class") || token.equals("interface") ||
                         token.equals("enum") || token.equals("record") ||
                         token.equals("switch")) {
-                        skipNextBrace = true; // don't inject after this brace
+                        skipNextBrace = true;
                     } else if (token.equals("return")) {
                         afterReturn = true;
                     } else if (token.equals("break")) {
@@ -106,13 +100,18 @@ public class Instrumenter {
                     }
                 }
 
-                // handle braces and semicolons
                 if (c == '{') {
                     if (skipNextBrace) {
                         skipNextBrace = false;
                         braceDepth++;
+
+                        // only count first class-level brace as entering class
+                        if (!insideClass) {
+                            insideClass = true;
+                            continue; // don’t inject for class { itself
+                        }
                         inMethod = false;
-                    } else {
+                    } else if (insideClass) {
                         String detected = detectMethodName(src, i);
                         if (detected != null && !NON_METHOD_BLOCKS.contains(detected)) {
                             currentMethod = detected;
@@ -132,15 +131,14 @@ public class Instrumenter {
                         currentMethod = "block";
                     }
                 } else if (c == ';') {
-                    // skip after return, break, or throw
-                    if (!afterReturn && !afterBreak && !afterThrow && inMethod) {
+                    if (insideClass && inMethod &&
+                        !afterReturn && !afterBreak && !afterThrow) {
                         printCounter++;
                         out.append(" henry.tool.print(\"")
                            .append(className).append(" ")
                            .append(className).append("_").append(currentMethod)
                            .append(" ; trace #").append(printCounter).append("\");");
                     }
-                    // reset control-flow flags
                     afterReturn = false;
                     afterBreak = false;
                     afterThrow = false;
