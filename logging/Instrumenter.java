@@ -7,7 +7,8 @@ public class Instrumenter {
     private static final Set<String> ALLOWED_TYPES = Set.of(".java");
 
     private static final Set<String> NON_METHOD_BLOCKS = Set.of(
-            "if", "for", "while", "switch", "try", "catch", "finally", "do", "else", "synchronized", "static", "instanceof", "new"
+            "if", "for", "while", "switch", "try", "catch", "finally",
+            "do", "else", "synchronized", "static", "instanceof", "new"
     );
 
     public static void main(String[] args) throws IOException {
@@ -44,9 +45,10 @@ public class Instrumenter {
 
             boolean skipNextBrace = false;
             boolean afterReturn = false;
-            boolean skipUntilNewline = false;
             boolean inMethod = false;
             boolean inString = false;
+            boolean skipUntilNewline = false;
+
             int braceDepth = 0;
             int printCounter = 0;
             String currentMethod = "block";
@@ -56,30 +58,29 @@ public class Instrumenter {
                 char c = src.charAt(i);
                 out.append(c);
 
-                // Detect newline - clears skip zone
+                // reset skip when newline reached
                 if (c == '\n') {
                     skipUntilNewline = false;
                 }
 
-                // String literal toggle
+                // handle string literals
                 if (c == '"' && (i == 0 || src.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
-
-                // Skip everything while inside a string literal or in skip zone
                 if (inString || skipUntilNewline) continue;
 
-                // Track words
+                // track identifiers
                 if (Character.isJavaIdentifierPart(c)) {
                     word.append(c);
                 } else {
                     String token = word.toString();
+                    // mark "class" to skip its brace
                     if (token.equals("class") || token.equals("interface") || token.equals("enum") || token.equals("record")) {
                         skipNextBrace = true;
                     } else if (token.equals("return")) {
                         afterReturn = true;
                     } else if (token.equals("throws") || token.equals("log")) {
-                        // 🚫 Skip until next line completely
+                        // 👇 hard skip zone until newline
                         skipUntilNewline = true;
                     }
                     word.setLength(0);
@@ -90,7 +91,7 @@ public class Instrumenter {
                         skipNextBrace = false;
                         braceDepth++;
                         inMethod = false;
-                    } else if (!skipUntilNewline) {
+                    } else {
                         String detected = detectMethodName(src, i);
                         if (detected != null && !NON_METHOD_BLOCKS.contains(detected)) {
                             currentMethod = detected;
@@ -111,8 +112,7 @@ public class Instrumenter {
                         currentMethod = "block";
                     }
                 } else if (c == ';') {
-                    // Skip trace if after return or skip zone active
-                    if (!afterReturn && !skipUntilNewline && inMethod) {
+                    if (!afterReturn && inMethod && !skipUntilNewline) {
                         printCounter++;
                         out.append(" henry.tool.print(\"")
                            .append(className)
@@ -132,6 +132,7 @@ public class Instrumenter {
         }
     }
 
+    // --- helper ---
     private static String detectMethodName(String src, int openIdx) {
         int i = openIdx - 1;
         while (i >= 0 && Character.isWhitespace(src.charAt(i))) i--;
